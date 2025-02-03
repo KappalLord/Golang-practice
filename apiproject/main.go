@@ -21,76 +21,119 @@ type Rate struct {
 	Price float64
 }
 
-func getExchangeRateHandler(w http.ResponseWriter, r *http.Request) {
-	currency := r.URL.Query().Get("currency")
+type ExchangeRateApiClient struct {
+	apiURL string
+}
 
-	connStr := "user=postgres password=password dbname=postgres sslmode=disable host=localhost port=5432"
+type Database struct {
+	db *sql.DB
+}
+
+func NewExchangeRateClient(apiURL string) *ExchangeRateApiClient {
+	return &ExchangeRateApiClient{apiURL: apiURL}
+}
+
+func (client *ExchangeRateApiClient) GetExchangeRateApi(currency string) (float64, error) {
+	resp, err := http.Get(client.apiURL)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return 0, err
+	}
+
+	var rates ExchangeRates
+	if err := json.Unmarshal(body, &rates); err != nil {
+		return 0, err
+	}
+
+	rate, exists := rates.Rates[currency]
+	if !exists {
+		return 0, fmt.Errorf("currency not found")
+	}
+
+	return rate, nil
+}
+
+func OpenDB(connStr string) (*Database, error) {
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
-	defer db.Close()
+	return &Database{db: db}, nil
+}
 
-	row := db.QueryRow("select * from rates where rate_name=$1", currency)
+func (database *Database) GetRate(currency string) (Rate, error) {
+	row := database.db.QueryRow("SELECT * FROM rates WHERE rate_name=$1", currency)
 	DBrate := Rate{}
-	err = row.Scan(&DBrate.Id, &DBrate.Name, &DBrate.Price)
+	err := row.Scan(&DBrate.Id, &DBrate.Name, &DBrate.Price)
+	if err != nil {
+		return DBrate, err
+	}
+	return DBrate, nil
+}
 
-	switch err {
-	case sql.ErrNoRows:
-		resp, err := http.Get("http://api.exchangeratesapi.io/v1/latest?access_key=986cdb6c4c9a47fabf369d77b6b82154")
+func (database *Database) SaveRate(currency string, rate float64) error {
+	_, err := database.db.Exec("INSERT INTO rates (rate_name, rate_price) VALUES ($1, $2)", currency, rate)
+	return err
+}
 
-		if err != nil {
+func getExchangeRateHandler(client *ExchangeRateApiClient, database *Database) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		currency := r.URL.Query().Get("currency")
+
+		DBrate, err := database.GetRate(currency)
+
+		switch err {
+		case sql.ErrNoRows:
+			rate, err := client.GetExchangeRateApi(currency)
+			if err != nil {
+				log.Fatal(err)
+				fmt.Println("Here")
+				return
+			}
+			err = database.SaveRate(currency, rate)
+			if err != nil {
+				log.Fatal(err)
+				return
+			}
+
+			response := map[string]float64{
+				"rate": rate,
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(response)
+			fmt.Println("Case with API")
+
+		case nil:
+			response := map[string]float64{
+				"rate": DBrate.Price,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(response)
+			fmt.Println("Case with DB")
+		default:
 			log.Fatal(err)
+
 		}
-
-		defer resp.Body.Close()
-
-		body, err := ioutil.ReadAll(resp.Body)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		var rates ExchangeRates
-		if err := json.Unmarshal(body, &rates); err != nil {
-			log.Fatal(err)
-		}
-
-		rate, exists := rates.Rates[currency]
-		if !exists {
-			log.Fatal(err)
-		}
-
-		result, err := db.Exec("insert into rates (rate_name, rate_price) values ($1, $2)", currency, rate)
-		if err != nil {
-			log.Fatal(err)
-		}
-		fmt.Println(result)
-
-		response := map[string]float64{
-			"rate": rate,
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
-
-		fmt.Println("Case with API")
-
-	case nil:
-		response := map[string]float64{
-			"rate": DBrate.Price,
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
-
-		fmt.Println("Case with DB")
-	default:
-		log.Fatal(err)
 	}
 }
 
 func main() {
-	http.HandleFunc("/", getExchangeRateHandler)
+	connStr := "user=postgres password=password dbname=postgres sslmode=disable host=localhost port=5432"
+	database, err := OpenDB(connStr)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer database.db.Close()
 
+	client := NewExchangeRateClient("http://api.exchangeratesapi.io/v1/latest?access_key=986cdb6c4c9a47fabf369d77b6b82154")
+
+	http.HandleFunc("/", getExchangeRateHandler(client, database))
 	fmt.Println("Сервер запущен на порту 8080...")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
 		fmt.Println("Ошибка при запуске сервера:", err)
