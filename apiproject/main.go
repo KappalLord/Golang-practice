@@ -52,7 +52,7 @@ func (client *ExchangeRateApiClient) GetExchangeRateApi(currency string) (float6
 
 	rate, exists := rates.Rates[currency]
 	if !exists {
-		return 0, fmt.Errorf("currency not found")
+		return 0, fmt.Errorf("Валюты не найдено")
 	}
 
 	return rate, nil
@@ -87,17 +87,20 @@ func getExchangeRateHandler(client *ExchangeRateApiClient, database *Database) h
 
 		DBrate, err := database.GetRate(currency)
 
-		switch err {
-		case sql.ErrNoRows:
+		if err != nil && err != sql.ErrNoRows {
+			log.Println(err)
+		}
+		
+		switch DBrate.Price {
+		case 0:
 			rate, err := client.GetExchangeRateApi(currency)
 			if err != nil {
-				log.Fatal(err)
-				fmt.Println("Here")
+				log.Println(err)
 				return
 			}
 			err = database.SaveRate(currency, rate)
 			if err != nil {
-				log.Fatal(err)
+				log.Println(err)
 				return
 			}
 
@@ -108,16 +111,14 @@ func getExchangeRateHandler(client *ExchangeRateApiClient, database *Database) h
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(response)
 			fmt.Println("Case with API")
-
-		case nil:
+			
+		default:
 			response := map[string]float64{
 				"rate": DBrate.Price,
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(response)
 			fmt.Println("Case with DB")
-		default:
-			log.Fatal(err)
 
 		}
 	}
@@ -127,7 +128,7 @@ func main() {
 	connStr := "user=postgres password=password dbname=postgres sslmode=disable host=localhost port=5432"
 	database, err := OpenDB(connStr)
 	if err != nil {
-		log.Fatal(err)
+		log.Println(err)
 	}
 	defer database.db.Close()
 
