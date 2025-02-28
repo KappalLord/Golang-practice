@@ -6,47 +6,65 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	_ "github.com/lib/pq"
+	memorycache "github.com/maxchagin/go-memorycache-example"
 )
 
-func getExchangeRateHandler(client *ExchangeRateApiClient, database *Database) http.HandlerFunc {
+func getExchangeRateHandler(client *ExchangeRateApiClient, database *Database, cache *memorycache.Cache) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		currency := r.URL.Query().Get("currency")
 
-		DBrate, err := database.GetRate(currency)
+		casheValue, exists := cache.Get(currency)
 
-		if err != nil && err != sql.ErrNoRows {
-			http.Error(w, "Database error", http.StatusNotAcceptable)
-			return
-		}
+		if !exists {
+			fmt.Println("No exchange rate found in cashe")
 
-		if err == sql.ErrNoRows {
-			rate, err := client.GetExchangeRateApi(currency)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusNotAcceptable)
-				return
-			}
-			err = database.SaveRate(currency, rate)
-			if err != nil {
-				log.Println(err)
+			DBrate, err := database.GetRate(currency)
+
+			if err != nil && err != sql.ErrNoRows {
+				http.Error(w, "Database error", http.StatusNotAcceptable)
 				return
 			}
 
-			response := map[string]float64{
-				"rate": rate,
-			}
+			if err == sql.ErrNoRows {
+				rate, err := client.GetExchangeRateApi(currency)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusNotAcceptable)
+					return
+				}
+				err = database.SaveRate(currency, rate)
+				if err != nil {
+					log.Println(err)
+					return
+				}
+				cache.Set(currency, rate, 5*time.Minute)
 
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(response)
-			fmt.Println("Case with API")
+				response := map[string]float64{
+					"rate": rate,
+				}
+
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(response)
+				fmt.Println("Case with API")
+			} else {
+				cache.Set(currency, DBrate.Price, 5*time.Minute)
+				response := map[string]float64{
+					"rate": DBrate.Price,
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(response)
+				fmt.Println("Case with DB")
+			}
 		} else {
 			response := map[string]float64{
-				"rate": DBrate.Price,
+				"rate": casheValue.(float64),
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(response)
-			fmt.Println("Case with DB")
+			fmt.Println("Case with cashe")
+
 		}
 
 	}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"time"
 )
 
 type ExchangeRates struct {
@@ -20,4 +21,9 @@ type ExchangeRateApiClient struct {
 
 type Database struct {
 	db *sql.DB
+}
+type Item struct {
+	Value      interface{}
+	Created    time.Time
+	Expiration int64
 }
